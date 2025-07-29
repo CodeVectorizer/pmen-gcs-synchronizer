@@ -1,0 +1,14 @@
+# GCS and Google Cloud dependencies
+google-cloud-storage
+google-auth
+
+# ClickHouse database connector
+clickhouse-connect
+
+# For scheduling tasks
+schedule
+
+# For watching file system events
+watchdog
+dotenv
+numpy

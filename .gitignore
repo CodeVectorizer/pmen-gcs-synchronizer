@@ -1,0 +1,6 @@
+.env
+venv/
+documents/
+.cache/
+logs/
+credentials/
