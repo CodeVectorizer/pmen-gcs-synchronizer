@@ -1,0 +1,19 @@
+[Unit]
+Description=PMEN Document Sync Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/pmen-sync
+EnvironmentFile=/etc/default/pmen-sync
+ExecStart=/usr/bin/python3 /opt/pmen-sync/clickhouse_to_gcs.py
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=pmen-sync
+
+[Install]
+WantedBy=multi-user.target
