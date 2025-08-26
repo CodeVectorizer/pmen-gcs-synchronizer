@@ -26,14 +26,15 @@ GCS_SERVICE_ACCOUNT_KEY = get_absolute_path(
     get_env_variable('GCS_SERVICE_ACCOUNT_KEY')
 )
 
-# ClickHouse Configuration
-CLICKHOUSE_HOST = get_env_variable('CLICKHOUSE_HOST', 'localhost')
-# The clickhouse-driver library uses the native TCP protocol, which defaults to port 9000.
-# Port 8123 is for the HTTP interface and will cause an EOFError with this driver.
-CLICKHOUSE_PORT = int(get_env_variable('CLICKHOUSE_PORT', '9000'))
-CLICKHOUSE_USER = get_env_variable('CLICKHOUSE_USER', 'default')
-CLICKHOUSE_PASSWORD = get_env_variable('CLICKHOUSE_PASSWORD', '')
-CLICKHOUSE_DATABASE = get_env_variable('CLICKHOUSE_DATABASE', 'default')
+
+# PostgreSQL Configuration
+POSTGRES_HOST = get_env_variable('POSTGRES_HOST', 'localhost')
+POSTGRES_PORT = int(get_env_variable('POSTGRES_PORT', '5432'))
+POSTGRES_USER = get_env_variable('POSTGRES_USER', 'pmendika')
+POSTGRES_PASSWORD = get_env_variable('POSTGRES_PASSWORD', 'AppPm3n2025')
+POSTGRES_DB = get_env_variable('POSTGRES_DB', 'pmen')
+POSTGRES_SCHEMA = get_env_variable('POSTGRES_SCHEMA', 'transaksi')
+POSTGRES_VIEW = get_env_variable('POSTGRES_VIEW', 'v_dokumen')
 
 # Folder to Watch
 WATCHED_FOLDER = get_absolute_path(

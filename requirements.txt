@@ -2,8 +2,8 @@
 google-cloud-storage
 google-auth
 
-# ClickHouse database connector
-clickhouse-connect
+# PostgreSQL database connector
+psycopg2-binary
 
 # For scheduling tasks
 schedule

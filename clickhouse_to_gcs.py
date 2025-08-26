@@ -20,22 +20,24 @@ except ImportError:
     
 from google.cloud import storage
 from google.oauth2 import service_account
-from clickhouse_driver import Client
+
+# Use psycopg2 for PostgreSQL
+import psycopg2
+import psycopg2.extras
+import psycopg2.extras
 
 # Load environment variables from .env file
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
 if os.path.exists(env_path):
     load_dotenv(env_path)
 
-# Configuration from environment variables with defaults
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-CLICKHOUSE_PORT = int(os.getenv('CLICKHOUSE_PORT', 9000))
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'default')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', '')
-CLICKHOUSE_DATABASE = os.getenv('CLICKHOUSE_DATABASE', 'default')
-GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME')
-GCS_SERVICE_ACCOUNT_KEY = os.getenv('GCS_SERVICE_ACCOUNT_KEY')
-WATCHED_FOLDER = os.getenv('WATCHED_FOLDER', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'documents'))
+
+# Import PostgreSQL config from config.py
+from config import (
+    POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, POSTGRES_SCHEMA, POSTGRES_VIEW,
+    GCS_BUCKET_NAME, GCS_SERVICE_ACCOUNT_KEY, WATCHED_FOLDER
+)
+
 
 # Ensure required environment variables are set
 if not GCS_BUCKET_NAME or not GCS_SERVICE_ACCOUNT_KEY:
@@ -73,24 +75,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def get_clickhouse_connection():
-    """Establish and test connection to ClickHouse."""
+
+def get_postgres_connection():
+    """Establish and test connection to PostgreSQL."""
     try:
-        logger.info("Attempting to connect to ClickHouse...")
-        client = Client(
-            host=CLICKHOUSE_HOST,
-            port=CLICKHOUSE_PORT,
-            user=CLICKHOUSE_USER,
-            password=CLICKHOUSE_PASSWORD,
-            database=CLICKHOUSE_DATABASE,
-            settings={'use_numpy': True}
+        logger.info("Attempting to connect to PostgreSQL...")
+        conn = psycopg2.connect(
+            host=POSTGRES_HOST,
+            port=POSTGRES_PORT,
+            user=POSTGRES_USER,
+            password=POSTGRES_PASSWORD,
+            dbname=POSTGRES_DB
         )
-        # Test connection with a simple query
-        client.execute('SELECT 1')
-        logger.info("ClickHouse connection successful.")
-        return client
+        # Test connection
+        with conn.cursor() as cur:
+            cur.execute('SELECT 1')
+        logger.info("PostgreSQL connection successful.")
+        return conn
     except Exception as e:
-        logger.error(f"Failed to connect to ClickHouse: {e}", exc_info=True)
+        logger.error(f"Failed to connect to PostgreSQL: {e}", exc_info=True)
         raise
 
 def get_gcs_client():
@@ -109,22 +112,19 @@ def get_gcs_client():
         logger.error(f"Failed to connect to GCS: {e}", exc_info=True)
         raise
 
-def query_clickhouse(client, query, params=None):
+
+def query_postgres(conn, query, params=None):
     """
     Execute query and return results as a list of dictionaries.
-    
     Args:
-        client: ClickHouse client instance
+        conn: psycopg2 connection
         query: SQL query string with %(param_name)s placeholders
         params: Dictionary of parameters to substitute in the query
     """
-    if params:
-        # Format the query with parameters
-        query = query % params
-    
-    result = client.execute(query, with_column_types=True)
-    columns = [col[0] for col in result[1]]
-    return [dict(zip(columns, row)) for row in result[0]]
+    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
 
 def upload_to_gcs(gcs_client, bucket_name: str, file_path: str, destination_blob_name: str) -> bool:
     """Upload a file to GCS bucket with detailed logging."""
@@ -179,22 +179,22 @@ def find_local_file(file_path: str, search_dir: str) -> Optional[str]:
         return os.path.abspath(file_matches[0])
     return None
 
-def get_documents_from_clickhouse(ch_client, limit: int = 3000) -> list:
+
+def get_documents_from_postgres(conn, limit: int = 3000) -> list:
     """
-    Retrieve documents from ClickHouse.
+    Retrieve documents from PostgreSQL view.
     Returns a list of document dictionaries.
     """
-    query = """
-    SELECT id_base, id_relasi, id_dokumen, kode_jenis_file, nomor, tahun, 
-           judul, file, file_path, link
-    FROM data.pmen_dokumen
+    query = f"""
+    SELECT id_base, id_relasi, id_dokumen, kode_jenis_file, nomor, tahun,
+        judul, file, file_path, link
+    FROM {POSTGRES_SCHEMA}.{POSTGRES_VIEW}
     ORDER BY id_dokumen DESC
     LIMIT %(limit)s
     """
-    
-    logger.info(f"Retrieving up to {limit} documents from ClickHouse...")
-    results = query_clickhouse(ch_client, query, params={'limit': limit})
-    logger.info(f"Retrieved {len(results)} documents from ClickHouse")
+    logger.info(f"Retrieving up to {limit} documents from PostgreSQL view...")
+    results = query_postgres(conn, query, params={'limit': limit})
+    logger.info(f"Retrieved {len(results)} documents from PostgreSQL view")
     return results
 
 def filter_unprocessed_documents(documents: list, processed_cache: set) -> tuple[list, dict]:
@@ -211,7 +211,9 @@ def filter_unprocessed_documents(documents: list, processed_cache: set) -> tuple
     unprocessed = []
     for doc in documents:
         doc_id = doc.get('id_dokumen')
-        if doc_id in processed_cache:
+        # Convert to string for comparison with cache (which stores string IDs)
+        doc_id_str = str(doc_id) if doc_id is not None else None
+        if doc_id_str and doc_id_str in processed_cache:
             stats['already_processed'] += 1
             logger.debug(f"Document {doc_id} already processed, skipping")
         else:
@@ -367,53 +369,54 @@ def load_processed_cache() -> set:
         logger.error(f"Failed to load processing cache: {e}", exc_info=True)
         return set()
 
+
 def main():
     # Base directory for document search
     base_dir = os.path.dirname(os.path.abspath(__file__))
     documents_dir = WATCHED_FOLDER or os.path.join(base_dir, 'documents')
-    
+
     # Create necessary directories
     os.makedirs(documents_dir, exist_ok=True)
-    
+
     try:
         logger.info("=" * 80)
         logger.info(f"Starting GCS Synchronizer at {datetime.now().isoformat()}")
         logger.info(f"Document directory: {documents_dir}")
         logger.info(f"GCS Bucket: {GCS_BUCKET_NAME}")
         logger.info("-" * 80)
-        
+
         # Initialize clients
-        logger.info("Initializing ClickHouse client...")
-        ch_client = get_clickhouse_connection()
-        logger.info("Connected to ClickHouse")
-        
+        logger.info("Initializing PostgreSQL client...")
+        pg_conn = get_postgres_connection()
+        logger.info("Connected to PostgreSQL")
+
         logger.info("Initializing GCS client...")
         gcs_client = get_gcs_client()
         logger.info("Initialized GCS client")
-        
+
         # Step 1: Load processed cache
         logger.info("Loading processed documents cache...")
         processed_cache = load_processed_cache()
-        
-        # Step 2: Get all documents from ClickHouse
-        logger.info("Retrieving documents from ClickHouse...")
-        all_documents = get_documents_from_clickhouse(ch_client)
-        
+
+        # Step 2: Get all documents from PostgreSQL
+        logger.info("Retrieving documents from PostgreSQL view...")
+        all_documents = get_documents_from_postgres(pg_conn)
+
         if not all_documents:
-            logger.warning("No documents found in ClickHouse")
+            logger.warning("No documents found in PostgreSQL view")
             return
-        
+
         # Step 3: Filter out already processed documents
         unprocessed_docs, filter_stats = filter_unprocessed_documents(all_documents, processed_cache)
-        
+
         if not unprocessed_docs:
             logger.info("No new documents to process. All documents have already been processed.")
             return
-            
+
         # Step 4: Process only the unprocessed documents
         logger.info(f"Processing {len(unprocessed_docs)} new documents...")
         process_stats = process_documents(unprocessed_docs, gcs_client, documents_dir)
-        
+
         # Load existing report to get previously processed files
         try:
             report_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'reports')
@@ -422,19 +425,12 @@ def main():
                 with open(report_file, 'r', encoding='utf-8') as f:
                     existing_report = json.load(f)
                 existing_processed = existing_report.get('processed_files', [])
-                # Only keep existing entries that aren't in our new processed files
-                existing_processed_ids = {str(item['id_dokumen']) for item in existing_processed if 'id_dokumen' in item}
-                new_processed_ids = {str(item['id_dokumen']) for item in process_stats.get('processed_files', []) if 'id_dokumen' in item}
-                
-                # Keep only the existing entries that aren't in our new processed files
-                existing_processed = [item for item in existing_processed 
-                                   if str(item.get('id_dokumen', '')) not in new_processed_ids]
             else:
                 existing_processed = []
         except Exception as e:
             logger.warning(f"Could not load existing report to merge processed files: {e}")
             existing_processed = []
-        
+
         # Combine statistics and merge processed files
         stats = {
             **filter_stats,
@@ -443,22 +439,22 @@ def main():
             'end_time': None,
             'processed_files': existing_processed + process_stats.get('processed_files', [])
         }
-        
+
         # Save processing report
         report_file = save_processing_report(stats)
         if report_file:
             logger.info(f"Processing report saved to: {report_file}")
-        
+
         logger.info("GCS Synchronizer completed successfully")
-        
+
     except Exception as e:
         logger.critical(f"Fatal error in main process: {str(e)}", exc_info=True)
         raise
     finally:
-        if 'ch_client' in locals():
-            ch_client.disconnect()
-            logger.info("Disconnected from ClickHouse")
-        
+        if 'pg_conn' in locals():
+            pg_conn.close()
+            logger.info("Disconnected from PostgreSQL")
+
         logger.info("=" * 80)
 
 class PMENFileWatcher:
